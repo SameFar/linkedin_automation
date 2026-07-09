@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for the linkedos scheduler daemon.
+
+  This is an EXAMPLE. It is not installed. See README.md ("Running the daemon under
+  launchd") for the copy/edit/load steps.
+
+  Replace every __PLACEHOLDER__ before loading:
+    __PROJECT_DIR__  absolute path to the repo checkout, e.g. /Users/you/code/linkedos
+    __UV_PATH__      output of `which uv`, e.g. /opt/homebrew/bin/uv
+
+  RunAtLoad + KeepAlive make the daemon start at login and restart if it dies, so it
+  survives a reboot. Secrets are NOT set here: the process reads .env from
+  WorkingDirectory. Never put a key in a plist — it is world-readable.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.linkedos.scheduler</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__UV_PATH__</string>
+        <string>run</string>
+        <string>--frozen</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>linkedos.scheduler</string>
+    </array>
+
+    <!-- .env and data/ are resolved relative to this directory. -->
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_DIR__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart the daemon if it exits for any reason, but no faster than every 10s. -->
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- The app also logs to data/logs/linkedos.log; these two catch anything that
+         escapes the logging config, such as a traceback during startup. -->
+    <key>StandardOutPath</key>
+    <string>__PROJECT_DIR__/data/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_DIR__/data/logs/launchd.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
