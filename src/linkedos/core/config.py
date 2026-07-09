@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     # Local services.
     ollama_base_url: str = "http://localhost:11434"
 
+    # Models. `embed_model` is recorded on every stored vector: changing it invalidates
+    # the existing embeddings, which must be recomputed before similarity search works.
+    embed_model: str = "nomic-embed-text"
+
+    # Timeouts, in seconds, for the two outbound integrations.
+    llm_timeout_s: float = 60.0
+    ollama_timeout_s: float = 60.0
+
     # Storage. `db_path` is also the anchor for logs and backups.
     db_path: Path = Path("data/linkedos.db")
 

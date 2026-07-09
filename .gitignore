@@ -10,8 +10,11 @@ wheels/
 .venv/
 .env
 
-# Local state: database, logs, backups
-data/
+# Local state: database, logs, backups.
+# `data/*` rather than `data/`: git cannot re-include a file inside an excluded
+# directory, and seed_voice.md is checked in for the user to fill out.
+data/*
+!data/seed_voice.md
 *.db
 *.db-wal
 *.db-shm

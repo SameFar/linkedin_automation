@@ -8,7 +8,7 @@ existing before there is any real business logic to put in it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -22,6 +22,9 @@ from linkedos.db.session import get_session
 
 logger = get_logger(__name__)
 
+#: The daemon beats every 60s. Three missed beats is a dead daemon, not a slow one.
+HEARTBEAT_STALE_AFTER_S = 180.0
+
 
 @dataclass(frozen=True, slots=True)
 class AppStatus:
@@ -32,6 +35,26 @@ class AppStatus:
     db_exists: bool
     heartbeat_count: int
     last_heartbeat: datetime | None
+
+    @property
+    def last_heartbeat_utc(self) -> datetime | None:
+        """`last_heartbeat`, guaranteed aware. SQLite drops the timezone on write."""
+        if self.last_heartbeat is None:
+            return None
+        beat = self.last_heartbeat
+        return beat if beat.tzinfo else beat.replace(tzinfo=UTC)
+
+    def heartbeat_age_s(self, now: datetime | None = None) -> float | None:
+        """Seconds since the last heartbeat, or `None` if the daemon never beat."""
+        beat = self.last_heartbeat_utc
+        if beat is None:
+            return None
+        return ((now or datetime.now(UTC)) - beat).total_seconds()
+
+    def scheduler_is_alive(self, now: datetime | None = None) -> bool:
+        """Whether a heartbeat landed recently enough to believe the daemon is running."""
+        age = self.heartbeat_age_s(now)
+        return age is not None and age <= HEARTBEAT_STALE_AFTER_S
 
 
 def get_app_status() -> AppStatus:
