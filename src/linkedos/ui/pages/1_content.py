@@ -13,13 +13,16 @@ from linkedos.core.errors import LinkedOSError
 from linkedos.core.logging import configure_logging
 from linkedos.services import content
 from linkedos.ui import data
-from linkedos.ui.components import status_badge
+from linkedos.ui.components import require_database, status_badge
 
 configure_logging()
 st.set_page_config(page_title="linkedos · content", page_icon="✍️", layout="wide")
 
 st.title("Draft a post")
 st.caption("Generates variants in your voice, saves them as drafts, and queues them for review.")
+
+if not require_database(data.app_status()):
+    st.stop()
 
 with st.form("draft_form"):
     topic = st.text_input(

@@ -51,9 +51,18 @@ def _cmd_status() -> int:
     status = get_app_status()
     print(f"linkedos {status.version}")
     print(f"db path:  {status.db_path} (exists: {status.db_exists})")
-    if status.db_exists:
-        last = status.last_heartbeat.isoformat() if status.last_heartbeat else "never"
-        print(f"heartbeat: {status.heartbeat_count} row(s), last {last}")
+
+    if not status.db_exists:
+        print("no database yet; run `alembic upgrade head`")
+        return EXIT_OK
+
+    print(f"schema:   {status.db_revision or 'none'} (head: {status.head_revision or 'unknown'})")
+    if status.needs_migration:
+        print("schema is out of date; run `alembic upgrade head`")
+        return EXIT_OK
+
+    last = status.last_heartbeat.isoformat() if status.last_heartbeat else "never"
+    print(f"heartbeat: {status.heartbeat_count} row(s), last {last}")
     print("OK")
     return EXIT_OK
 

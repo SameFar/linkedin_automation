@@ -74,6 +74,13 @@ def main() -> int:
     status = get_app_status()
     if not status.db_exists:
         logger.warning("database %s does not exist; run `alembic upgrade head`", settings.db_path)
+    elif status.needs_migration:
+        logger.warning(
+            "database %s is at revision %s, code expects %s; run `alembic upgrade head`",
+            settings.db_path,
+            status.db_revision or "none",
+            status.head_revision,
+        )
 
     scheduler = build_scheduler()
     stop = threading.Event()

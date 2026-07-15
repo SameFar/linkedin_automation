@@ -12,7 +12,7 @@ import streamlit as st
 from linkedos.core.logging import configure_logging
 from linkedos.services import audit, logs
 from linkedos.ui import data
-from linkedos.ui.components import audit_table, log_view
+from linkedos.ui.components import audit_table, log_view, require_database
 
 # `AuditAction` reaches the UI re-exported through `services.audit`; `ui/` must not
 # import `db/` directly, even for an enum.
@@ -38,17 +38,20 @@ with log_tab:
     )
 
 with audit_tab:
-    action_names = ("ALL", *(action.value for action in AuditAction))
-    controls, _ = st.columns([1, 2])
-    with controls:
-        action = st.selectbox("Action", action_names, index=0)
-        post_id = st.number_input("Post id (0 for all)", min_value=0, value=0, step=1)
-        limit = st.slider("Entries", min_value=10, max_value=500, value=50, step=10)
+    # Only this tab needs the database; the log tail is read from a file and is often the
+    # only thing that can explain why the database is unusable.
+    if require_database(data.app_status()):
+        action_names = ("ALL", *(action.value for action in AuditAction))
+        controls, _ = st.columns([1, 2])
+        with controls:
+            action = st.selectbox("Action", action_names, index=0)
+            post_id = st.number_input("Post id (0 for all)", min_value=0, value=0, step=1)
+            limit = st.slider("Entries", min_value=10, max_value=500, value=50, step=10)
 
-    entries = audit.list_recent(
-        limit,
-        entity_id=int(post_id) or None,
-        action=None if action == "ALL" else AuditAction(action),
-    )
-    st.caption(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'}, newest first")
-    audit_table(entries, empty="Nothing audited yet.")
+        entries = audit.list_recent(
+            limit,
+            entity_id=int(post_id) or None,
+            action=None if action == "ALL" else AuditAction(action),
+        )
+        st.caption(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'}, newest first")
+        audit_table(entries, empty="Nothing audited yet.")

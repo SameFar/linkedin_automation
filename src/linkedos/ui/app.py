@@ -15,7 +15,7 @@ from linkedos.core.logging import configure_logging
 from linkedos.services.costs import SpendReport
 from linkedos.services.status import HEARTBEAT_STALE_AFTER_S, AppStatus
 from linkedos.ui import data
-from linkedos.ui.components import audit_table, log_view
+from linkedos.ui.components import audit_table, log_view, require_database
 
 
 def _scheduler_panel(status: AppStatus) -> None:
@@ -60,8 +60,7 @@ def _render() -> None:
     status = data.app_status()
     st.caption(f"version {status.version} · database `{status.db_path}`")
 
-    if not status.db_exists:
-        st.error(f"No database at `{status.db_path}`. Run `alembic upgrade head`, then reload.")
+    if not require_database(status):
         return
 
     queue = data.queue()

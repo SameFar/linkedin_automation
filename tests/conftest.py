@@ -15,10 +15,12 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from sqlalchemy import Engine, text
 
 from linkedos.ai.client import AIClient
 from linkedos.ai.providers.fake import FAKE_EMBED_MODEL, FakeProvider
 from linkedos.core.config import Settings, get_settings
+from linkedos.db.migrations import head_revision
 from linkedos.db.models import Base
 from linkedos.db.session import get_engine, get_sessionmaker
 
@@ -59,15 +61,34 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pa
     _clear_caches()
 
 
+def _stamp_head(engine: Engine) -> None:
+    """Record the newest revision, as `alembic upgrade head` would have.
+
+    `create_all` builds the head schema but writes no `alembic_version` row, so anything
+    comparing the two — `services.status`, the UI's `require_database` guard — would call
+    a perfectly good temp database stale.
+    """
+    head = head_revision()
+    if head is None:
+        return
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE IF NOT EXISTS alembic_version (version_num TEXT)"))
+        connection.execute(text("DELETE FROM alembic_version"))
+        connection.execute(text("INSERT INTO alembic_version VALUES (:rev)"), {"rev": head})
+
+
 @pytest.fixture
 def temp_db(isolated_env: Path) -> Path:
     """Create an empty schema in a temp SQLite file and return its path.
 
     Uses `Base.metadata.create_all` rather than Alembic: the tests assert on the models,
     and a migration run per test would be slow. `make check` keeps the two honest by
-    running against the same metadata that Alembic autogenerates from.
+    running against the same metadata that Alembic autogenerates from. The result is then
+    stamped at head, because a head schema is what it is.
     """
-    Base.metadata.create_all(get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    _stamp_head(engine)
     return isolated_env / "data" / "linkedos.db"
 
 
