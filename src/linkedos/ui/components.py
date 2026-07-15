@@ -14,8 +14,9 @@ import streamlit as st
 
 from linkedos.services.audit import AuditEntry
 from linkedos.services.logs import LogLine
+from linkedos.services.status import AppStatus
 from linkedos.services.workflow import PostView
-from linkedos.ui.data import DRAFT_TEXT_PREFIX
+from linkedos.ui.data import DRAFT_TEXT_PREFIX, SELECT_PREFIX
 
 #: `on_approve(post_id, edited_content)` — the text on screen, not the text in the DB.
 ApproveFn = Callable[[int, str], None]
@@ -32,6 +33,28 @@ _STATUS_COLOUR = {
     "rejected": "red",
     "failed": "red",
 }
+
+
+def require_database(status: AppStatus) -> bool:
+    """Render why the database is unusable and return `False`, or return `True`.
+
+    Every page calls this before its first read. A page that skips it queries a database
+    that may be missing or a migration behind, and Streamlit answers with a raw
+    `OperationalError` traceback instead of the one sentence that fixes it.
+    """
+    if not status.db_exists:
+        st.error(f"No database at `{status.db_path}`. Run `alembic upgrade head`, then reload.")
+        return False
+
+    if status.needs_migration:
+        st.error(
+            f"Database schema is out of date: `{status.db_path}` is at revision "
+            f"`{status.db_revision or 'none'}`, the code expects `{status.head_revision}`. "
+            "Run `alembic upgrade head`, then reload."
+        )
+        return False
+
+    return True
 
 
 def status_badge(status: str) -> str:
@@ -51,12 +74,18 @@ def _age(moment: datetime) -> str:
     return f"{int(seconds // 86_400)}d ago"
 
 
+def selection_key(post_id: int) -> str:
+    """Session-state key holding whether a card's batch-select checkbox is ticked."""
+    return f"{SELECT_PREFIX}{post_id}"
+
+
 def approvable_card(
     post: PostView,
     *,
     on_approve: ApproveFn,
     on_reject: RejectFn,
     on_regenerate: RegenerateFn,
+    selectable: bool = False,
     disabled: bool = False,
 ) -> None:
     """One draft, editable, with Approve / Reject / Regenerate.
@@ -65,12 +94,25 @@ def approvable_card(
     the moment Approve is pressed is what gets passed to `on_approve` — so an edit the
     reviewer made but never explicitly "saved" is still the text that gets approved. The
     alternative, silently approving the unedited original, is the dangerous one.
+
+    With `selectable=True` the card grows a checkbox whose state lives under
+    `selection_key(post.id)`, so a page can read which cards are ticked and hand their
+    ids to a batch approve/reject. The checkbox is transient UI state, not durable data.
     """
     text_key = f"{DRAFT_TEXT_PREFIX}{post.id}"
     reason_key = f"reject_reason_{post.id}"
 
     with st.container(border=True):
-        header, meta = st.columns([3, 1])
+        if selectable:
+            select_col, header, meta = st.columns([0.5, 2.5, 1])
+            select_col.checkbox(
+                "Select",
+                key=selection_key(post.id),
+                label_visibility="collapsed",
+                disabled=disabled,
+            )
+        else:
+            header, meta = st.columns([3, 1])
         header.markdown(f"**{post.topic}**")
         meta.markdown(status_badge(post.status.value))
         st.caption(

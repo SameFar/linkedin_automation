@@ -35,29 +35,41 @@ logger = get_logger(__name__)
 # types it needs to annotate its own helpers must be reachable from here.
 __all__ = [
     "AIClient",
+    "BatchResult",
+    "BatchSummary",
     "DraftBatch",
     "PostStatus",
     "PostView",
     "Queue",
     "create_drafts",
+    "generate_batch",
+    "get_batch",
     "get_default_client",
     "get_pending_drafts",
     "get_post",
     "get_queue",
+    "recent_batches",
     "regenerate",
 ]
 
 PROMPT_VERSION = "post_v1"
+TOPICS_PROMPT_VERSION = "topics_v1"
 PURPOSE_DRAFT = "draft_post"
 PURPOSE_EMBED = "embed_post"
 PURPOSE_QUERY = "dedup_query"
+PURPOSE_PROPOSE = "propose_topics"
 
 #: How many past posts to feed the prompt as "don't repeat these".
 CONTEXT_POSTS = 3
+#: How many recent topics to show the topic proposer so it does not repeat them.
+RECENT_TOPIC_CONTEXT = 20
 #: Cosine above which two posts are "about the same thing" and the user is warned.
 DEDUP_THRESHOLD = 0.82
 MAX_TOKENS = 1024
 MAX_VARIANTS = 10
+#: A batch of more than a month of distinct topics is almost certainly a mistake.
+MAX_BATCH_TOPICS = 31
+MAX_PROPOSE_TOKENS = 512
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +133,7 @@ def create_drafts(
     n: int = 3,
     *,
     client: AIClient | None = None,
+    batch_id: str | None = None,
 ) -> DraftBatch:
     """Generate `n` draft variants on `topic` and save them as `status=draft`.
 
@@ -133,6 +146,8 @@ def create_drafts(
         topic: What to write about, in the user's own words.
         n: How many variants. Each is a billed model call.
         client: Injected for tests. Defaults to the real Claude + Ollama client.
+        batch_id: Tags every draft as part of one `generate_batch` run. `None` for a
+            standalone single-topic run, which belongs to no batch.
 
     Returns:
         The saved drafts, the run's total cost, and any similar past posts found.
@@ -163,7 +178,7 @@ def create_drafts(
     variants, cost = _generate(topic, n, voice=voice, similar=similar, client=resolved)
 
     variant_group_id = uuid.uuid4().hex
-    posts = _persist(topic, variants, variant_group_id, client=resolved)
+    posts = _persist(topic, variants, variant_group_id, client=resolved, batch_id=batch_id)
 
     logger.info(
         "drafted %d variant(s) topic=%r group=%s cost=$%.6f",
@@ -224,6 +239,7 @@ def _persist(
     variant_group_id: str,
     *,
     client: AIClient,
+    batch_id: str | None = None,
 ) -> list[PostView]:
     """Save the drafts, then embed each one into memory.
 
@@ -247,6 +263,7 @@ def _persist(
                         content=text,
                         status=PostStatus.DRAFT,
                         variant_group_id=variant_group_id,
+                        batch_id=batch_id,
                         topic=topic,
                         prompt_version=PROMPT_VERSION,
                     )
@@ -330,3 +347,176 @@ def regenerate(post_id: int, n: int = 1, *, client: AIClient | None = None) -> D
 
     logger.info("regenerated %d variant(s) from post %d", n, post_id)
     return batch
+
+
+@dataclass(frozen=True, slots=True)
+class BatchResult:
+    """Everything one `generate_batch` run produced.
+
+    A batch is a set of drafts created together so they can be reviewed, approved, and
+    scheduled as a unit — a week of content set up in one sitting. `cost_usd` covers the
+    whole run: every draft call, plus the topic-proposal call when topics were generated.
+    """
+
+    batch_id: str
+    posts: list[PostView]
+    topics: list[str]
+    prompt_version: str
+    cost_usd: float
+
+
+@dataclass(frozen=True, slots=True)
+class BatchSummary:
+    """A batch as the review UI lists it, without loading every draft's body."""
+
+    batch_id: str
+    topics: list[str]
+    draft_count: int
+    total_count: int
+
+
+def _parse_topics(text: str, n: int) -> list[str]:
+    """Pull up to `n` clean topic lines out of the model's reply.
+
+    The prompt asks for one topic per line, but models still sometimes number or bullet
+    them; strip that and drop blanks. Deduplicated case-insensitively so two phrasings of
+    the same subject do not both survive.
+    """
+    topics: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        cleaned = line.strip().lstrip("-*•0123456789.) ").strip().strip('"')
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append(cleaned)
+        if len(topics) == n:
+            break
+    return topics
+
+
+def propose_topics(n: int, *, client: AIClient) -> tuple[list[str], float]:
+    """Have the model propose `n` on-brand topics from the voice profile and recent work.
+
+    One billed call, recorded to the ledger like any other. Returns the topics and what
+    the call cost.
+    """
+    voice = get_or_seed()
+    with get_session() as session:
+        recent = list(PostRepo(session).recent_topics(RECENT_TOPIC_CONTEXT))
+    recent_block = "\n".join(f"- {topic}" for topic in recent) or "(none yet)"
+
+    prompt = registry.render(
+        TOPICS_PROMPT_VERSION,
+        voice_guidelines=voice.guidelines,
+        voice_examples=voice.examples,
+        recent_topics=recent_block,
+        count=str(n),
+    )
+    result = client.complete(
+        [Message(role="user", content=prompt.user)],
+        tier=Tier.DRAFT,
+        purpose=PURPOSE_PROPOSE,
+        system=prompt.system,
+        max_tokens=MAX_PROPOSE_TOKENS,
+        prompt_version=prompt.version,
+    )
+
+    topics = _parse_topics(result.text, n)
+    if not topics:
+        raise WorkflowError("topic proposer returned no usable topics")
+    return topics, result.cost_usd
+
+
+def generate_batch(
+    topics: list[str] | int,
+    per_topic: int = 1,
+    *,
+    client: AIClient | None = None,
+) -> BatchResult:
+    """Create a whole batch of drafts in one call, tagged with a shared `batch_id`.
+
+    Two ways in, one result:
+
+    * pass an explicit ``list[str]`` of topics, or
+    * pass an ``int`` N and let the model propose N on-brand topics first.
+
+    Either way, `per_topic` variants are drafted for each topic, all sharing one
+    `batch_id` so the approval screen can review them as a set. Each topic still runs
+    through `create_drafts`, so dedup, embedding, and per-variant auditing are unchanged.
+
+    Raises:
+        WorkflowError: on an out-of-range count, an empty topic list, or a bad `per_topic`.
+    """
+    if not 1 <= per_topic <= MAX_VARIANTS:
+        raise WorkflowError(f"per_topic must be between 1 and {MAX_VARIANTS}, got {per_topic}")
+
+    resolved = client or get_client()
+    proposal_cost = 0.0
+
+    if isinstance(topics, int):
+        if not 1 <= topics <= MAX_BATCH_TOPICS:
+            raise WorkflowError(f"count must be between 1 and {MAX_BATCH_TOPICS}, got {topics}")
+        topic_list, proposal_cost = propose_topics(topics, client=resolved)
+    else:
+        topic_list = [topic.strip() for topic in topics if topic.strip()]
+        if not topic_list:
+            raise WorkflowError("no non-empty topics given")
+        if len(topic_list) > MAX_BATCH_TOPICS:
+            raise WorkflowError(f"a batch may hold at most {MAX_BATCH_TOPICS} topics")
+
+    batch_id = uuid.uuid4().hex
+    posts: list[PostView] = []
+    cost = proposal_cost
+    for topic in topic_list:
+        drafted = create_drafts(topic, per_topic, client=resolved, batch_id=batch_id)
+        posts.extend(drafted.posts)
+        cost += drafted.cost_usd
+
+    logger.info(
+        "generated batch %s: %d topic(s) x %d = %d draft(s) cost=$%.6f",
+        batch_id,
+        len(topic_list),
+        per_topic,
+        len(posts),
+        cost,
+    )
+    return BatchResult(
+        batch_id=batch_id,
+        posts=posts,
+        topics=topic_list,
+        prompt_version=PROMPT_VERSION,
+        cost_usd=cost,
+    )
+
+
+def get_batch(batch_id: str, status: PostStatus | None = None) -> list[PostView]:
+    """Every post in one batch, oldest first, optionally narrowed to a single status."""
+    with get_session() as session:
+        return [to_view(post) for post in PostRepo(session).list_by_batch(batch_id, status)]
+
+
+def recent_batches(limit: int = 10) -> list[BatchSummary]:
+    """The most recent batches, newest first, for the review screen's batch picker."""
+    summaries: list[BatchSummary] = []
+    with get_session() as session:
+        repo = PostRepo(session)
+        for batch_id in repo.recent_batch_ids(limit):
+            posts = repo.list_by_batch(batch_id)
+            topics: list[str] = []
+            for post in posts:
+                if post.topic not in topics:
+                    topics.append(post.topic)
+            drafts = sum(1 for post in posts if post.status is PostStatus.DRAFT)
+            summaries.append(
+                BatchSummary(
+                    batch_id=batch_id,
+                    topics=topics,
+                    draft_count=drafts,
+                    total_count=len(posts),
+                )
+            )
+    return summaries

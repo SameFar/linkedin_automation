@@ -85,6 +85,34 @@ class PostRepo:
         )
         return list(self._session.scalars(stmt))
 
+    def list_by_batch(self, batch_id: str, status: PostStatus | None = None) -> Sequence[Post]:
+        """Every post in one `generate_batch` run, oldest first, optionally one status."""
+        stmt = select(Post).where(Post.batch_id == batch_id)
+        if status is not None:
+            stmt = stmt.where(Post.status == status)
+        return list(self._session.scalars(stmt.order_by(Post.id)))
+
+    def recent_batch_ids(self, limit: int = 10) -> Sequence[str]:
+        """The most recently created batch ids, newest first. Nulls are not batches."""
+        stmt = (
+            select(Post.batch_id)
+            .where(Post.batch_id.is_not(None))
+            .group_by(Post.batch_id)
+            .order_by(func.max(Post.created_at).desc())
+            .limit(limit)
+        )
+        return [batch_id for batch_id in self._session.scalars(stmt) if batch_id is not None]
+
+    def recent_topics(self, limit: int = 20) -> Sequence[str]:
+        """Distinct recent post topics, newest first — the themes the author writes on."""
+        stmt = (
+            select(Post.topic)
+            .group_by(Post.topic)
+            .order_by(func.max(Post.created_at).desc())
+            .limit(limit)
+        )
+        return list(self._session.scalars(stmt))
+
     def count(self) -> int:
         return int(self._session.scalar(select(func.count()).select_from(Post)) or 0)
 

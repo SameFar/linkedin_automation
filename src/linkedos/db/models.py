@@ -135,6 +135,10 @@ class Post(Base):
         nullable=False,
     )
     variant_group_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    # Drafts created together in one `generate_batch` run share a `batch_id`, so a week's
+    # worth of posts can be reviewed, approved, and scheduled as one set. Null for the
+    # single-topic `create_drafts` path and for every post written before batches existed.
+    batch_id: Mapped[str | None] = mapped_column(String(32), index=True, default=None)
     topic: Mapped[str] = mapped_column(String(512), nullable=False)
     prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
 

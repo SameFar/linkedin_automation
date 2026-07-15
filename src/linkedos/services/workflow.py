@@ -24,7 +24,8 @@ this module nor anything it calls talks to LinkedIn.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
@@ -72,6 +73,7 @@ class PostView:
     status: PostStatus
     topic: str
     variant_group_id: str
+    batch_id: str | None
     prompt_version: str
     created_at: datetime
     updated_at: datetime
@@ -88,6 +90,7 @@ def to_view(post: Post) -> PostView:
         status=post.status,
         topic=post.topic,
         variant_group_id=post.variant_group_id,
+        batch_id=post.batch_id,
         prompt_version=post.prompt_version,
         created_at=post.created_at,
         updated_at=post.updated_at,
@@ -208,6 +211,126 @@ def reject(post_id: int, *, reason: str = "", actor: Actor = Actor.HUMAN) -> Pos
 def revert_to_draft(post_id: int, *, actor: Actor = Actor.HUMAN) -> PostView:
     """Pull an approved post back to draft so it can be edited again."""
     return _transition(post_id, PostStatus.DRAFT, actor=actor)
+
+
+@dataclass(frozen=True, slots=True)
+class FailedTransition:
+    """One post a batch operation could not move, and why."""
+
+    post_id: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class BatchOutcome:
+    """The result of a batch approve/reject: what moved, and what could not.
+
+    Illegal moves are *reported*, never silently dropped. A caller that batch-approves
+    five posts, one of which a second tab already approved, gets four in `applied` and
+    that one in `failed` — not four-of-five and no explanation.
+    """
+
+    applied: list[PostView] = field(default_factory=list)
+    failed: list[FailedTransition] = field(default_factory=list)
+
+    @property
+    def applied_ids(self) -> list[int]:
+        return [view.id for view in self.applied]
+
+    @property
+    def all_succeeded(self) -> bool:
+        return not self.failed
+
+
+def _batch_transition(
+    post_ids: Sequence[int],
+    to_status: PostStatus,
+    *,
+    actor: Actor,
+    edits: Mapping[int, str] | None = None,
+    detail: str = "",
+) -> BatchOutcome:
+    """Move many posts to `to_status` in one transaction, auditing each move.
+
+    Every legal move is applied and audited; every illegal or missing one is collected
+    into `failed` and leaves its post untouched. The legal moves commit together, so a
+    failure partway through the set never leaves half a batch approved and half not.
+    """
+    applied: list[PostView] = []
+    failed: list[FailedTransition] = []
+    edits = edits or {}
+
+    with get_session() as session:
+        repo = PostRepo(session)
+        for post_id in post_ids:
+            post = repo.get(post_id)
+            if post is None:
+                failed.append(FailedTransition(post_id, f"no post with id {post_id}"))
+                continue
+
+            from_status = post.status
+            if not can_transition(from_status, to_status):
+                failed.append(
+                    FailedTransition(
+                        post_id,
+                        f"illegal transition {from_status.value} -> {to_status.value}",
+                    )
+                )
+                continue
+
+            edited = edits.get(post_id)
+            if edited is not None:
+                edited = edited.strip()
+                if edited and edited != post.content:
+                    record_audit(
+                        session,
+                        actor=actor,
+                        action=AuditAction.EDITED,
+                        entity_id=post_id,
+                        detail=f"content changed: {len(post.content)} -> {len(edited)} chars",
+                    )
+                    post.content = edited
+
+            post.status = to_status
+            record_audit(
+                session,
+                actor=actor,
+                action=_ACTIONS[(from_status, to_status)],
+                entity_id=post_id,
+                detail=detail,
+            )
+            session.flush()
+            applied.append(to_view(post))
+
+    logger.info(
+        "batch %s: %d applied, %d failed by %s",
+        to_status.value,
+        len(applied),
+        len(failed),
+        actor.value,
+    )
+    return BatchOutcome(applied=applied, failed=failed)
+
+
+def batch_approve(
+    post_ids: Sequence[int],
+    *,
+    edits: Mapping[int, str] | None = None,
+    actor: Actor = Actor.HUMAN,
+) -> BatchOutcome:
+    """Approve many drafts at once, saving any per-post `edits` before the flip.
+
+    Bulk approval, not un-reviewed approval: every post here was on screen in the batch
+    review, and `edits` carries whatever text the reviewer left in each card.
+    """
+    return _batch_transition(post_ids, PostStatus.APPROVED, actor=actor, edits=edits)
+
+
+def batch_reject(
+    post_ids: Sequence[int], *, reason: str = "", actor: Actor = Actor.HUMAN
+) -> BatchOutcome:
+    """Reject many drafts at once. Terminal — a rejected post is redrafted, not undone."""
+    return _batch_transition(post_ids, PostStatus.REJECTED, actor=actor, detail=reason)
 
 
 def edit_draft(post_id: int, content: str, *, actor: Actor = Actor.HUMAN) -> PostView:

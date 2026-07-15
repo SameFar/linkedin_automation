@@ -32,6 +32,9 @@ READ_TTL_S = 5
 #: Prefix of the per-card text-area widget keys. Transient UI state, purged on write.
 DRAFT_TEXT_PREFIX = "draft_text_"
 
+#: Prefix of the per-card batch-select checkbox keys. Also transient, also purged.
+SELECT_PREFIX = "select_"
+
 
 @st.cache_resource
 def ai_client() -> content.AIClient:
@@ -64,6 +67,21 @@ def spend() -> costs.SpendReport:
 
 
 @st.cache_data(ttl=READ_TTL_S)
+def recent_batches(limit: int = 10) -> list[content.BatchSummary]:
+    return content.recent_batches(limit)
+
+
+@st.cache_data(ttl=READ_TTL_S)
+def batch_drafts(batch_id: str) -> list[content.PostView]:
+    return content.get_batch(batch_id, content.PostStatus.DRAFT)
+
+
+@st.cache_data(ttl=READ_TTL_S)
+def batch_approved(batch_id: str) -> list[content.PostView]:
+    return content.get_batch(batch_id, content.PostStatus.APPROVED)
+
+
+@st.cache_data(ttl=READ_TTL_S)
 def recent_audit(limit: int = 5) -> list[audit.AuditEntry]:
     return audit.list_recent(limit)
 
@@ -91,6 +109,7 @@ def after_mutation() -> None:
     the next rerun to re-seed from the database, which is the only source of truth.
     """
     st.cache_data.clear()
-    for key in [k for k in st.session_state if k.startswith(DRAFT_TEXT_PREFIX)]:
+    stale = (DRAFT_TEXT_PREFIX, SELECT_PREFIX)
+    for key in [k for k in st.session_state if k.startswith(stale)]:
         del st.session_state[key]
     st.rerun()
