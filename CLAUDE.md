@@ -31,11 +31,16 @@ structured logging, and — for LLM calls — token/cost accounting.
 
 ## Forbidden features
 
-Never build, even if asked elsewhere: scraping LinkedIn or any site; automated
-commenting, liking, connecting, or messaging on LinkedIn; automated job applications; any
-browser automation pointed at LinkedIn. The system drafts; a human executes. Publishing
-the user's own posts via LinkedIn's official API is the only automated outbound action
-permitted.
+Never build, even if asked elsewhere: scraping LinkedIn or any site; automated connecting
+or messaging on LinkedIn; automated job applications; any browser automation pointed at
+LinkedIn. The system drafts; a human approves.
+
+Permitted automated outbound actions — all through LinkedIn's official API, all on the
+user's own account only: publishing the user's own posts, and posting comments and
+reactions (likes) the user has approved. Engagement is on the user's behalf and never mass
+or indiscriminate: comments and likes run through the same draft-then-approve gate every
+post does, and each is recorded in the audit log. No scraping, no browser automation, no
+acting on anyone else's account.
 
 ## Secrets
 

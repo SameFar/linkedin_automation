@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     # Storage. `db_path` is also the anchor for logs and backups.
     db_path: Path = Path("data/linkedos.db")
 
+    # Publishing. The daemon only pushes scheduled posts to LinkedIn when this is on;
+    # it defaults off so a fresh install never publishes before the API is wired and a
+    # real account is connected. `publish_poll_seconds` is how often the daemon checks
+    # for posts whose `scheduled_at` has arrived.
+    publish_enabled: bool = False
+    publish_poll_seconds: float = 60.0
+
     # Operations.
     log_level: LogLevel = "INFO"
     monthly_budget_usd: float = 30.0

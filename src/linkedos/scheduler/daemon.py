@@ -23,13 +23,14 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from linkedos import __version__
 from linkedos.core.config import get_settings
 from linkedos.core.logging import configure_logging, get_logger
-from linkedos.scheduler.jobs import heartbeat_job
+from linkedos.scheduler.jobs import heartbeat_job, publish_due_posts_job
 from linkedos.services.status import get_app_status
 
 logger = get_logger(__name__)
 
 HEARTBEAT_JOB_ID = "heartbeat"
 HEARTBEAT_INTERVAL_SECONDS = 60
+PUBLISH_JOB_ID = "publish_due_posts"
 JOBSTORE_TABLE = "apscheduler_jobs"
 
 
@@ -61,6 +62,14 @@ def build_scheduler() -> BackgroundScheduler:
         seconds=HEARTBEAT_INTERVAL_SECONDS,
         id=HEARTBEAT_JOB_ID,
         name="Write a heartbeat row",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        publish_due_posts_job,
+        trigger="interval",
+        seconds=settings.publish_poll_seconds,
+        id=PUBLISH_JOB_ID,
+        name="Publish scheduled posts whose time has come",
         replace_existing=True,
     )
     return scheduler

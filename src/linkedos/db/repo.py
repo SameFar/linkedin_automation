@@ -85,6 +85,26 @@ class PostRepo:
         )
         return list(self._session.scalars(stmt))
 
+    def list_due(self, now: datetime, limit: int = 100) -> Sequence[Post]:
+        """Scheduled posts whose publish time has arrived, oldest slot first.
+
+        The publish loop's inbox: `status == scheduled` and `scheduled_at <= now`.
+        Ordering by `scheduled_at` means a backlog drains in the order it was queued, so
+        a post that missed its slot while the daemon was down still goes out before one
+        scheduled after it.
+        """
+        stmt = (
+            select(Post)
+            .where(
+                Post.status == PostStatus.SCHEDULED,
+                Post.scheduled_at.is_not(None),
+                Post.scheduled_at <= now,
+            )
+            .order_by(Post.scheduled_at)
+            .limit(limit)
+        )
+        return list(self._session.scalars(stmt))
+
     def list_by_batch(self, batch_id: str, status: PostStatus | None = None) -> Sequence[Post]:
         """Every post in one `generate_batch` run, oldest first, optionally one status."""
         stmt = select(Post).where(Post.batch_id == batch_id)

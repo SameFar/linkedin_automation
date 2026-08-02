@@ -16,6 +16,7 @@ from linkedos.db.session import get_session
 from linkedos.scheduler.daemon import (
     HEARTBEAT_INTERVAL_SECONDS,
     HEARTBEAT_JOB_ID,
+    PUBLISH_JOB_ID,
     build_scheduler,
 )
 from linkedos.scheduler.jobs import heartbeat_job
@@ -54,6 +55,13 @@ def test_status_service_sees_the_heartbeat(temp_db: Path) -> None:
 def test_scheduler_registers_the_heartbeat_job(temp_db: Path) -> None:
     scheduler = build_scheduler()
 
-    jobs = scheduler.get_jobs()
-    assert [job.id for job in jobs] == [HEARTBEAT_JOB_ID]
-    assert jobs[0].trigger.interval == timedelta(seconds=HEARTBEAT_INTERVAL_SECONDS)
+    job = scheduler.get_job(HEARTBEAT_JOB_ID)
+    assert job is not None
+    assert job.trigger.interval == timedelta(seconds=HEARTBEAT_INTERVAL_SECONDS)
+
+
+def test_scheduler_registers_the_publish_job(temp_db: Path) -> None:
+    scheduler = build_scheduler()
+
+    assert {job.id for job in scheduler.get_jobs()} == {HEARTBEAT_JOB_ID, PUBLISH_JOB_ID}
+    assert scheduler.get_job(PUBLISH_JOB_ID) is not None
